@@ -6,6 +6,9 @@ using LoopVectorization
 using LinearAlgebra
 using LinearAlgebra.BLAS: trsm!
 
+# This is LAPACK's default block size for DGETRF()
+const block_size = 64
+
 function find_pivot(a, n)
     pivot_ind = 1
     maxabs = abs(a[1])
@@ -122,8 +125,66 @@ function apply_row_swaps!(A, ipiv, n, mpivot)
 end
 
 function row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integer})
-    recursive_row_pivot_lu!(A, ipiv, size(A, 1), size(A, 2))
+    blocked_row_pivot_lu!(A, ipiv, size(A, 1), size(A, 2))
     return A
+end
+
+function blocked_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integer},
+                               m::Integer, n::Integer)
+    @inbounds begin
+        n_diag = min(m, n)
+
+        if n_diag ≤ block_size
+            return recursive_row_pivot_lu!(A, ipiv, m, n)
+        end
+
+        for j ∈ 1:block_size:n_diag
+            jb = min(block_size, n_diag - j + 1)
+            je = j + jb - 1
+            this_ipiv = @view ipiv[j:n_diag]
+
+            # Factor diagonal and subdiagonal blocks.
+            @views recursive_row_pivot_lu!(A[j:m,j:je], this_ipiv, m - j + 1, jb)
+
+            # Apply interchanges to columns 1:j-1
+            if j > 1
+                apply_row_swaps!(@view(A[j:m,1:j-1]), this_ipiv, j - 1, jb)
+            end
+
+            if j + jb ≤ n
+                m2 = m - je
+                n2 = n - je
+
+                # Apply interchanges to columns j+jb:n
+                apply_row_swaps!(@view(A[j:m,je+1:n]), this_ipiv, n2, jb)
+
+                # Compute block row of U.
+                A12 = @view A[j:je,je+1:n]
+                @views trsm!('L', 'L', 'N', 'U', 1.0, A[j:je,j:je], A12)
+                #A11 = @view A[j:je,j:je]
+                #for j ∈ 1:n2, i ∈ 1:jb-1
+                #    for k ∈ i+1:jb
+                #        A12[k,j] -= A11[k,i] * A12[i,j]
+                #    end
+                #end
+
+                if j + jb ≤ m
+                    # Update trailing submatrix.
+                    A21 = @view A[je+1:m,j:je]
+                    A22 = @view A[je+1:m,je+1:n]
+                    mul!(A22, A21, A12, -1.0, 1.0)
+                    #@turbo for j ∈ 1:n2, k ∈ 1:jb, i ∈ 1:m2
+                    #    A22[i,j] -= A21[i,k] * A12[k,j]
+                    #end
+                end
+            end
+
+            # Adjust pivot indices.
+            this_ipiv .+= j - 1
+        end
+    end
+
+    return nothing
 end
 
 function recursive_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integer},
@@ -190,10 +251,10 @@ function recursive_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integ
             # Update A22
             A21 = @view A[n1+1:m,1:n1]
             A22 = @view A[n1+1:m,n1+1:n]
-            #mul!(A22, A21, A12, -1.0, 1.0)
-            @turbo for j ∈ 1:n2, k ∈ 1:n1, i ∈ 1:m2
-                A22[i,j] -= A21[i,k] * A12[k,j]
-            end
+            mul!(A22, A21, A12, -1.0, 1.0)
+            #@turbo for j ∈ 1:n2, k ∈ 1:n1, i ∈ 1:m2
+            #    A22[i,j] -= A21[i,k] * A12[k,j]
+            #end
 
             # Factor A22
             bottom_ipiv = @view ipiv[n1+1:min(m,n)]

@@ -11,6 +11,10 @@ function serial_benchmark(short_size::Integer, long_size::Integer)
     Ar = Matrix(transpose(Ac))
     ipiv = zeros(Int64,short_size)
 
+    println("Benchmark short_size=$short_size, long_size=$long_size")
+    println("===========================================")
+    println()
+
     println("LAPACK")
     b = @benchmark LAPACK.getrf!(Acopy, $ipiv) setup=(Acopy=copy($Ar))
     display(b)
@@ -23,7 +27,10 @@ function serial_benchmark(short_size::Integer, long_size::Integer)
     b = @benchmark column_pivot_lu!(Acopy, $jpiv) setup=(Acopy=copy($Ac))
     display(b)
 
+    println()
+
     return nothing
 end
 
 serial_benchmark(128, 4096)
+serial_benchmark(4096, 4096)
