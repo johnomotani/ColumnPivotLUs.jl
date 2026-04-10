@@ -115,10 +115,29 @@ function recursive_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:In
 end
 
 function apply_row_swaps!(A, ipiv, n, mpivot)
-    for i ∈ 1:mpivot
-        pivot_ind = ipiv[i]
-        for j ∈ 1:n
-            A[i,j], A[pivot_ind,j] = A[pivot_ind,j], A[i,j]
+    # Algorithm copied from LAPACK's DLASWP()
+    @inbounds begin
+        n32 = (n ÷ 32) * 32
+        if n32 != 0
+            for j ∈ 1:32:n32
+                for i ∈ 1:mpivot
+                    pivot = ipiv[i]
+                    if pivot != i
+                        for k ∈ j:j+31
+                            A[i,k], A[pivot,k] = A[pivot,k], A[i,k]
+                        end
+                    end
+                end
+            end
+        end
+        if n32 != n
+            j = n32 + 1
+            for i ∈ 1:mpivot
+                pivot = ipiv[i]
+                for k ∈ j:n
+                    A[i,k], A[pivot,k] = A[pivot,k], A[i,k]
+                end
+            end
         end
     end
     return nothing
