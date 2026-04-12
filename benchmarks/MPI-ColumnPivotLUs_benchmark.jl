@@ -48,7 +48,10 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
         return array
     end
 
-    Acopy = allocate_shared_float(short_size, long_size)
+    dat_dir = "benchmark-data"
+    mkpath(dat_dir)
+
+    Accopy = allocate_shared_float(short_size, long_size)
     index_buffer = allocate_shared_int(short_size)
     maxabs_buffer = allocate_shared_float(short_size)
     if rank == 0
@@ -56,7 +59,7 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
         Ac = rand(short_size, long_size)
         jpiv = zeros(Int64, short_size)
 
-        println("ColumnPivotLUs Benchmark np=$nproc short_size=$short_size, long_size=$long_size, ", now())
+        println("ColumnPivotLUMPI Benchmark np=$nproc short_size=$short_size, long_size=$long_size, ", now())
         println("=====================================================================================")
         println()
     else
@@ -70,11 +73,45 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
     # Do a fixed number of samples (with no limit on benchmark time) to ensure that all
     # MPI processes do exactly the same number of calls. Otherwise, the benchmark will
     # hang intermittently.
-    b = @benchmark lu!($Alu, $Acopy) setup=($rank == 0 && copyto!($Acopy, $Ac); MPI.Barrier($comm)) teardown=(MPI.Barrier($comm)) samples=nsamples evals=1 seconds=Inf
+    b = @benchmark lu!($Alu, $Accopy) setup=($rank == 0 && copyto!($Accopy, $Ac); MPI.Barrier($comm)) teardown=(MPI.Barrier($comm)) samples=nsamples evals=1 seconds=Inf
 
     if rank == 0
         display(b)
         println()
+        open(joinpath(dat_dir, "CP-$short_size-$long_size.dat"), "a") do io
+            println(io, minimum(b.times) * 1.0e-6)
+        end
+    end
+
+    Arcopy = allocate_shared_float(long_size, short_size)
+    index_buffer = allocate_shared_int(short_size)
+    maxabs_buffer = allocate_shared_float(short_size)
+    if rank == 0
+        Ar = Matrix(transpose(Ac))
+        ipiv = zeros(Int64, short_size)
+
+        println("RowPivotLUMPI Benchmark np=$nproc long_size=$long_size, short_size=$short_size, ", now())
+        println("=====================================================================================")
+        println()
+    else
+        Ar = nothing
+        ipiv = zeros(Int64, 0)
+    end
+    Alu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer)
+
+    MPI.Barrier(comm)
+
+    # Do a fixed number of samples (with no limit on benchmark time) to ensure that all
+    # MPI processes do exactly the same number of calls. Otherwise, the benchmark will
+    # hang intermittently.
+    b = @benchmark lu!($Alu, $Arcopy) setup=($rank == 0 && copyto!($Arcopy, $Ar); MPI.Barrier($comm)) teardown=(MPI.Barrier($comm)) samples=nsamples evals=1 seconds=Inf
+
+    if rank == 0
+        display(b)
+        println()
+        open(joinpath(dat_dir, "RP-$short_size-$long_size.dat"), "a") do io
+            println(io, minimum(b.times) * 1.0e-6)
+        end
     end
 
     # Free the MPI.Win objects, because if they are free'd by the garbage collector it may
