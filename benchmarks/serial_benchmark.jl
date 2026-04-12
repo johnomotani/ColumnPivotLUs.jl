@@ -20,11 +20,13 @@ function serial_benchmark(short_size::Integer, long_size::Integer)
     display(b)
 
     println("\nRow pivoting")
-    b = @benchmark row_pivot_lu!(Acopy, $ipiv) setup=(Acopy=copy($Ar))
+    rplu = get_row_pivot_lu(ipiv)
+    b = @benchmark lu!($rplu, Acopy) setup=(Acopy=copy($Ar))
     display(b)
 
     println("\ncolumn pivoting")
-    b = @benchmark column_pivot_lu!(Acopy, $jpiv) setup=(Acopy=copy($Ac))
+    cplu = get_column_pivot_lu(jpiv)
+    b = @benchmark lu!($cplu, Acopy) setup=(Acopy=copy($Ac))
     display(b)
 
     println()

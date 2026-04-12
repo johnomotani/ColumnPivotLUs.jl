@@ -63,13 +63,14 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
         Ac = nothing
         jpiv = zeros(Int64, 0)
     end
+    Alu = get_column_pivot_lu(jpiv, comm, index_buffer, maxabs_buffer)
 
     MPI.Barrier(comm)
 
     # Do a fixed number of samples (with no limit on benchmark time) to ensure that all
     # MPI processes do exactly the same number of calls. Otherwise, the benchmark will
     # hang intermittently.
-    b = @benchmark column_pivot_lu!($Acopy, $jpiv, $comm, $index_buffer, $maxabs_buffer) setup=($rank == 0 && copyto!($Acopy, $Ac); MPI.Barrier($comm)) teardown=(MPI.Barrier($comm)) samples=nsamples evals=1 seconds=Inf
+    b = @benchmark lu!($Alu, $Acopy) setup=($rank == 0 && copyto!($Acopy, $Ac); MPI.Barrier($comm)) teardown=(MPI.Barrier($comm)) samples=nsamples evals=1 seconds=Inf
 
     if rank == 0
         display(b)

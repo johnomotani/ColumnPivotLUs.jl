@@ -1,14 +1,92 @@
+"""
+LU factorizations, using algorithms copied from LAPACK
+
+Column-pivoting and row-pivoting variants of LU factorization. Parallelised using
+shared-memory MPI.
+
+The structs defined in ColumnPivotLUs are designed to be re-used with different sizes of
+matrix, so do not include the matrix storage, as would be usual in `LinearAlgebra.LU`,
+etc. The factors are returned in-place in the matrix passed to `lu!()`.
+
+The parallel version assumes that the arrays passed in (apart from `jpiv`) are MPI
+shared-memory arrays, which can be accessed by all processes in the MPI communicator.
+"""
 module ColumnPivotLUs
 
-export row_pivot_lu!, column_pivot_lu!
+export get_column_pivot_lu, get_row_pivot_lu
 
 #using LoopVectorization
 using LinearAlgebra
 using LinearAlgebra.BLAS: trsm!
 using MPI
 
+import LinearAlgebra: lu!
+
 # This is LAPACK's default block size for DGETRF()
 const block_size = 64
+
+struct ColumnPivotLU
+    jpiv::Vector{Int64}
+end
+
+struct ColumnPivotLUMPI{Vecint,Vecfloat}
+    jpiv::Vector{Int64}
+    comm::MPI.Comm
+    index_buffer::Vecint
+    maxabs_buffer::Vecfloat
+    rank::Int64
+    nproc::Int64
+end
+
+struct RowPivotLU
+    ipiv::Vector{Int64}
+end
+
+"""
+    get_column_pivot_lu(jpiv::Vector{Int64})
+
+`jpiv` does not have to be initialised, but must be longer than the largest number of
+pivot elements (the smaller of total number of rows or columns for a matrix) in any matrix
+that will be factorised using this `ColumnPivotLU`.
+"""
+function get_column_pivot_lu(jpiv::Vector{Int64})
+    return ColumnPivotLU(jpiv)
+end
+
+"""
+    get_column_pivot_lu(jpiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
+                        index_buffer::AbstractVector{<:Integer},
+                        maxabs_buffer::AbstractVector{<:Number})
+
+`jpiv` does not have to be initialised and is required only on the rank-0 process of
+`comm`, but must be longer than the largest number of pivot elements (the smaller of total
+number of rows or columns for a matrix) in any matrix that will be factorised using this
+`ColumnPivotLU`.
+
+`comm` is the MPI communicator containing processes used to parallelise factorizations
+using this `ColumnPivotLUMPI`.
+
+`index_buffer` and `maxabs_buffer` should be shared-memory arrays accessible by all
+processes in `comm`, whose length is at least the size of `comm`.
+"""
+function get_column_pivot_lu(jpiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
+                             index_buffer::AbstractVector{<:Integer},
+                             maxabs_buffer::AbstractVector{<:Number})
+    rank = MPI.Comm_rank(comm)
+    nproc = MPI.Comm_size(comm)
+    return ColumnPivotLUMPI(jpiv, comm, index_buffer, maxabs_buffer, rank, nproc)
+end
+
+"""
+    get_row_pivot_lu(ipiv::Vector{Int64})
+
+`ipiv` does not have to be initialised, but must be longer than the largest number of
+pivot elements (the smaller of total number of rows or columns for a matrix) in any matrix
+that will be factorised using this `RowPivotLU`.
+"""
+function get_row_pivot_lu(ipiv::Vector{Int64})
+    return RowPivotLU(ipiv)
+end
 
 function find_pivot(a::AbstractVector, n::Integer)
     pivot_ind = 1
@@ -23,9 +101,13 @@ function find_pivot(a::AbstractVector, n::Integer)
     return pivot_ind
 end
 
-function find_pivot(a::AbstractVector, n::Integer, comm::MPI.Comm,
-                    index_buffer::AbstractVector{<:Integer},
-                    maxabs_buffer::AbstractVector, rank::Integer, nproc::Integer)
+function find_pivot(xplu::ColumnPivotLUMPI, a::AbstractVector, n::Integer)
+    comm = xplu.comm
+    index_buffer = xplu.index_buffer
+    maxabs_buffer = xplu.maxabs_buffer
+    rank = xplu.rank
+    nproc = xplu.nproc
+
     entries_per_proc = (n + nproc - 1) ÷ nproc
     first_local_entry = rank * entries_per_proc + 1
     last_local_entry = min((rank + 1) * entries_per_proc, n)
@@ -65,14 +147,15 @@ function apply_column_swaps!(A, jpiv, m, npivot)
     return nothing
 end
 
-function column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:Integer})
-    blocked_column_pivot_lu!(A, jpiv, size(A, 1), size(A, 2))
+function lu!(cplu::ColumnPivotLU, A::AbstractMatrix)
+    blocked_column_pivot_lu!(cplu, A, size(A, 1), size(A, 2))
     return A
 end
 
-function blocked_column_pivot_lu!(A::AbstractMatrix, jpiv::AbstractVector{<:Integer},
-                                  m::Integer, n::Integer)
+function blocked_column_pivot_lu!(cplu::ColumnPivotLU, A::AbstractMatrix, m::Integer,
+                                  n::Integer)
     @inbounds begin
+        jpiv = cplu.jpiv
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
@@ -215,26 +298,22 @@ end
 # it is used to factorise 'top panels' as part of a blocked algorithm), we divide columns
 # among processes, and do not divide rows.
 
-function column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<:Integer},
-                          comm::MPI.Comm, index_buffer::AbstractVector{<:Integer},
-                          maxabs_buffer::AbstractVector{T}) where T
-    blocked_column_pivot_lu!(A, jpiv, size(A, 1), size(A, 2), comm, index_buffer,
-                             maxabs_buffer)
+function lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix)
+    blocked_column_pivot_lu!(cplu, A, size(A, 1), size(A, 2))
     return A
 end
 
-function blocked_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<:Integer},
-                                  m::Integer, n::Integer, comm::MPI.Comm,
-                                  index_buffer::AbstractVector{<:Integer},
-                                  maxabs_buffer::AbstractVector{T}) where T
+function blocked_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix, m::Integer,
+                                  n::Integer)
     @inbounds begin
+        jpiv = cplu.jpiv
+        comm = cplu.comm
+        rank = cplu.rank
+        nproc = cplu.nproc
         n_diag = min(m, n)
-        rank = MPI.Comm_rank(comm)
-        nproc = MPI.Comm_size(comm)
 
         if n_diag ≤ block_size
-            return recursive_column_pivot_lu!(A, jpiv, m, n, comm, index_buffer,
-                                              maxabs_buffer, rank, nproc)
+            return recursive_column_pivot_lu!(cplu, A, jpiv, m, n)
         end
 
         for i ∈ 1:block_size:n_diag
@@ -248,8 +327,7 @@ function blocked_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<:I
             end
 
             # Factor diagonal and right-of-diagonal blocks.
-            @views recursive_column_pivot_lu!(A[i:ie,i:n], this_jpiv, ib, n - i + 1, comm,
-                                              index_buffer, maxabs_buffer, rank, nproc)
+            @views recursive_column_pivot_lu!(cplu, A[i:ie,i:n], this_jpiv, ib, n - i + 1)
 
             # Apply interchanges to rows 1:i-1.
             # Column swaps are not parallelised, because memory copies probably do not
@@ -306,11 +384,9 @@ function blocked_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<:I
     return nothing
 end
 
-function recursive_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<:Integer},
-                                    m::Integer, n::Integer, comm::MPI.Comm,
-                                    index_buffer::AbstractVector{<:Integer},
-                                    maxabs_buffer::AbstractVector{T}, rank::Integer,
-                                    nproc::Integer) where T
+function recursive_column_pivot_lu!(cplu::ColumnPivotLUMPI, A::AbstractMatrix,
+                                    jpiv::AbstractVector{<:Integer}, m::Integer,
+                                    n::Integer)
     # A - the matrix being factorised in-place.
     # jpiv - the (column) pivot indices.
     # m - the number of rows in A.
@@ -330,6 +406,10 @@ function recursive_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<
             return nothing
         end
 
+        comm = cplu.comm
+        rank = cplu.rank
+        nproc = cplu.nproc
+
         if n == 1
             # One column case, just need to handle jpiv and update column.
             if rank == 0
@@ -339,8 +419,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<
             @views A[rank*rows_per_proc+2:min((rank+1)*rows_per_proc+1,m),1] .*= 1.0 / A[1,1]
         elseif m == 1
             # One row case.
-            pivot_ind = find_pivot(@view(A[1,:]), n, comm, index_buffer, maxabs_buffer,
-                                   rank, nproc)
+            pivot_ind = find_pivot(cplu, @view(A[1,:]), n)
             if rank == 0
                 jpiv[1] = pivot_ind
 
@@ -358,8 +437,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<
 
             # Factor
             # [ A11 | A12 ]
-            recursive_column_pivot_lu!(@view(A[1:m1,:]), jpiv, m1, n, comm, index_buffer,
-                                       maxabs_buffer, rank, nproc)
+            recursive_column_pivot_lu!(cplu, @view(A[1:m1,:]), jpiv, m1, n)
 
             # Apply interchanges to
             # [ A21 | A22 ]
@@ -401,8 +479,7 @@ function recursive_column_pivot_lu!(A::AbstractMatrix{T}, jpiv::AbstractVector{<
                 # Not used, so just pass through jpiv.
                 right_jpiv = jpiv
             end
-            recursive_column_pivot_lu!(@view(A[m1+1:m,m1+1:n]), right_jpiv, m2, n2, comm,
-                                       index_buffer, maxabs_buffer, rank, nproc)
+            recursive_column_pivot_lu!(cplu, @view(A[m1+1:m,m1+1:n]), right_jpiv, m2, n2)
 
             # Apply interchanges to A12.
             if rank == 0
@@ -445,14 +522,15 @@ function apply_row_swaps!(A, ipiv, n, mpivot)
     return nothing
 end
 
-function row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integer})
-    blocked_row_pivot_lu!(A, ipiv, size(A, 1), size(A, 2))
+function lu!(rplu::RowPivotLU, A::AbstractMatrix)
+    blocked_row_pivot_lu!(rplu, A, size(A, 1), size(A, 2))
     return A
 end
 
-function blocked_row_pivot_lu!(A::AbstractMatrix, ipiv::AbstractVector{<:Integer},
-                               m::Integer, n::Integer)
+function blocked_row_pivot_lu!(rplu::RowPivotLU, A::AbstractMatrix, m::Integer,
+                               n::Integer)
     @inbounds begin
+        ipiv = rplu.ipiv
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
