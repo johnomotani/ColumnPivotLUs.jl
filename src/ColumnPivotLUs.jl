@@ -168,60 +168,66 @@ function get_row_pivot_lu(ipiv::Union{Vector{Int64},Nothing}, comm::MPI.Comm,
 end
 
 function find_pivot(a::AbstractVector, n::Integer)
-    pivot_ind = 1
-    maxabs = abs(a[1])
-    for j ∈ 2:n
-        thisabs = abs(a[j])
-        if thisabs > maxabs
-            maxabs = thisabs
-            pivot_ind = j
-        end
-    end
-    return pivot_ind
-end
-
-function find_pivot(xplu::Union{ColumnPivotLUMPI,RowPivotLUMPI}, a::AbstractVector,
-                    n::Integer)
-    comm = xplu.comm
-    index_buffer = xplu.index_buffer
-    maxabs_buffer = xplu.maxabs_buffer
-    rank = xplu.rank
-    nproc = xplu.nproc
-
-    entries_per_proc = (n + nproc - 1) ÷ nproc
-    first_local_entry = rank * entries_per_proc + 1
-    last_local_entry = min((rank + 1) * entries_per_proc, n)
-    if last_local_entry ≥ first_local_entry
-        pivot_ind = first_local_entry
-        maxabs = abs(a[first_local_entry])
-        for j ∈ first_local_entry+1:last_local_entry
+    @inbounds begin
+        pivot_ind = 1
+        maxabs = abs(a[1])
+        for j ∈ 2:n
             thisabs = abs(a[j])
             if thisabs > maxabs
                 maxabs = thisabs
                 pivot_ind = j
             end
         end
-        index_buffer[rank+1] = pivot_ind
-        maxabs_buffer[rank+1] = maxabs
-    else
-        index_buffer[rank+1] = -1
-        maxabs_buffer[rank+1] = -1.0
+        return pivot_ind
     end
-    MPI.Barrier(comm)
-    if rank == 0
-        i = argmax(@view(maxabs_buffer[1:nproc]))
-        pivot_ind = index_buffer[i]
-    else
-        pivot_ind = -1
+end
+
+function find_pivot(xplu::Union{ColumnPivotLUMPI,RowPivotLUMPI}, a::AbstractVector,
+                    n::Integer)
+    @inbounds begin
+        comm = xplu.comm
+        index_buffer = xplu.index_buffer
+        maxabs_buffer = xplu.maxabs_buffer
+        rank = xplu.rank
+        nproc = xplu.nproc
+
+        entries_per_proc = (n + nproc - 1) ÷ nproc
+        first_local_entry = rank * entries_per_proc + 1
+        last_local_entry = min((rank + 1) * entries_per_proc, n)
+        if last_local_entry ≥ first_local_entry
+            pivot_ind = first_local_entry
+            maxabs = abs(a[first_local_entry])
+            for j ∈ first_local_entry+1:last_local_entry
+                thisabs = abs(a[j])
+                if thisabs > maxabs
+                    maxabs = thisabs
+                    pivot_ind = j
+                end
+            end
+            index_buffer[rank+1] = pivot_ind
+            maxabs_buffer[rank+1] = maxabs
+        else
+            index_buffer[rank+1] = -1
+            maxabs_buffer[rank+1] = -1.0
+        end
+        MPI.Barrier(comm)
+        if rank == 0
+            i = argmax(@view(maxabs_buffer[1:nproc]))
+            pivot_ind = index_buffer[i]
+        else
+            pivot_ind = -1
+        end
+        return pivot_ind
     end
-    return pivot_ind
 end
 
 function apply_column_swaps!(A, jpiv, m, npivot)
-    for j ∈ 1:npivot
-        pivot_ind = jpiv[j]
-        for i ∈ 1:m
-            A[i,j], A[i,pivot_ind] = A[i,pivot_ind], A[i,j]
+    @inbounds begin
+        for j ∈ 1:npivot
+            pivot_ind = jpiv[j]
+            for i ∈ 1:m
+                A[i,j], A[i,pivot_ind] = A[i,pivot_ind], A[i,j]
+            end
         end
     end
     return nothing
