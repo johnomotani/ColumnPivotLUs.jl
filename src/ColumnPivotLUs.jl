@@ -56,11 +56,9 @@ struct RowPivotLU
     ipiv::Vector{Int64}
 end
 
-struct RowPivotLUMPI{Vecint,Vecfloat,Ttimer,Tsync}
+struct RowPivotLUMPI{Vecint,Ttimer,Tsync}
     ipiv::Vecint
     comm::MPI.Comm
-    index_buffer::Vecint
-    maxabs_buffer::Vecfloat
     rank::Int64
     nproc::Int64
     proc_i::Int64
@@ -153,9 +151,7 @@ function get_row_pivot_lu(ipiv::Vector{Int64})
 end
 
 """
-    get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
-                     index_buffer::AbstractVector{<:Integer},
-                     maxabs_buffer::AbstractVector{<:Number})
+    get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm)
 
 `ipiv` does not have to be initialised and is a shared-memory array accessible on all
 processes in `comm`, which must be longer than the largest number of pivot elements (the
@@ -164,15 +160,9 @@ factorised using this `RowPivotLU`.
 
 `comm` is the MPI communicator containing processes used to parallelise factorizations
 using this `RowPivotLUMPI`.
-
-`index_buffer` and `maxabs_buffer` should be shared-memory arrays accessible by all
-processes in `comm`, whose length is at least the size of `comm`.
 """
-function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
-                          index_buffer::AbstractVector{<:Integer},
-                          maxabs_buffer::AbstractVector{<:Number};
-                          synchronize=nothing,
-                          timer::Union{TimerOutput,Nothing}=nothing)
+function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm;
+                          synchronize=nothing, timer::Union{TimerOutput,Nothing}=nothing)
     rank = MPI.Comm_rank(comm)
     nproc = MPI.Comm_size(comm)
 
@@ -195,9 +185,8 @@ function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm,
         synchronize = () -> MPI.Barrier(comm)
     end
 
-    return RowPivotLUMPI(ipiv, comm, index_buffer, maxabs_buffer, rank, nproc, proc_i,
-                         proc_I, proc_j, proc_J, use_rectangular_parallelism_threshold,
-                         synchronize, timer)
+    return RowPivotLUMPI(ipiv, comm, rank, nproc, proc_i, proc_I, proc_j, proc_J,
+                         use_rectangular_parallelism_threshold, synchronize, timer)
 end
 
 function find_pivot(a::AbstractVector, n::Integer)
@@ -988,14 +977,11 @@ end
 
 function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
                                  ipiv::AbstractVector{<:Integer}, m::Integer, n::Integer)
+    # rplu - the RowPivotLUMPI instance.
     # A - the matrix being factorised in-place.
     # ipiv - the (row) pivot indices.
     # m - the number of rows in A.
     # n - the number of columns in A.
-    # comm - MPI communicator linking the shared-memory processes.
-    # index_buffer - a shared-memory integer buffer to use when finding pivot indices.
-    # rank - the rank of this process in `comm`.
-    # nproc - the number of processes in `comm`.
 
     # This function is essentially a copy of DGETRF2 from LAPACK, v3.12.1.
     # Recurse not over rows/columns but by splitting the matrix approximately in half each
@@ -1028,8 +1014,8 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
             end
         elseif n == 1
             # One column case.
-            pivot_ind = find_pivot(rplu, @view(A[:,1]), m)
             if rank == 0
+                pivot_ind = find_pivot(@view(A[:,1]), m)
                 ipiv[1] = pivot_ind
 
                 # Apply the interchange

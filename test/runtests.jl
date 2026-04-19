@@ -153,7 +153,7 @@ function test_row_pivoting_mpi(m, n, tol)
         end
         s = min(m, n)
         ipiv = allocate_shared_int(s);
-        Alu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer)
+        Alu = get_row_pivot_lu(ipiv, comm)
         MPI.Barrier(comm)
         lu!(Alu, LU_arr)
         if rank == 0
