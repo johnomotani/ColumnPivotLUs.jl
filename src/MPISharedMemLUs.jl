@@ -68,6 +68,7 @@ struct RowPivotLUMPI{Vecint,Ttimer,Tsync}
     use_rectangular_parallelism_threshold::Int64
     synchronize::Tsync
     timer::Ttimer
+    check::Bool
 end
 
 macro maybe_timeit(timer, name, expr)
@@ -162,7 +163,8 @@ factorised using this `RowPivotLU`.
 using this `RowPivotLUMPI`.
 """
 function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm;
-                          synchronize=nothing, timer::Union{TimerOutput,Nothing}=nothing)
+                          synchronize=nothing, timer::Union{TimerOutput,Nothing}=nothing,
+                          check=true)
     rank = MPI.Comm_rank(comm)
     nproc = MPI.Comm_size(comm)
 
@@ -186,7 +188,7 @@ function get_row_pivot_lu(ipiv::AbstractVector{<:Integer}, comm::MPI.Comm;
     end
 
     return RowPivotLUMPI(ipiv, comm, rank, nproc, proc_i, proc_I, proc_j, proc_J,
-                         use_rectangular_parallelism_threshold, synchronize, timer)
+                         use_rectangular_parallelism_threshold, synchronize, timer, check)
 end
 
 function find_pivot(a::AbstractVector, n::Integer)
@@ -858,6 +860,7 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
         proc_J = rplu.proc_J
         rectangular_threshold = rplu.use_rectangular_parallelism_threshold
         synchronize = rplu.synchronize
+        check = rplu.check
         n_diag = min(m, n)
 
         if n_diag ≤ block_size
@@ -866,7 +869,7 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
             # For small (sub-)matrices, revert to a serial solve.
             if rank == 0
                 #return blocked_row_pivot_lu!(ipiv, A, m, n)
-                return getrf!(A, ipiv; check=false)
+                return getrf!(A, ipiv; check=check)
             else
                 return nothing
             end
@@ -884,7 +887,7 @@ function blocked_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix, m::Intege
                     #@views recursive_row_pivot_lu!(rplu, A[j:m,j:je], this_ipiv, m - j + 1, jb)
                     if rank == 0
                         #@views recursive_row_pivot_lu!(this_ipiv, A[j:m,j:je], m - j + 1, jb)
-                        @views getrf!(A[j:m,j:je], this_ipiv; check=false)
+                        @views getrf!(A[j:m,j:je], this_ipiv; check=check)
                     end
                 end
                 @maybe_timeit rplu.timer "synchronize 1" begin
@@ -997,12 +1000,13 @@ function recursive_row_pivot_lu!(rplu::RowPivotLUMPI, A::AbstractMatrix,
         rank = rplu.rank
         nproc = rplu.nproc
         synchronize = rplu.synchronize
+        check = rplu.check
 
         if m * n < serial_threshold
             # For small (sub-)matrices, revert to a serial solve.
             if rank == 0
                 #recursive_row_pivot_lu!(ipiv, A, m, n)
-                getrf!(A, ipiv; check=false)
+                getrf!(A, ipiv; check=check)
             end
             return nothing
         end

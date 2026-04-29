@@ -94,7 +94,7 @@ function mpi_benchmark(short_size::Integer, long_size::Integer, nsamples::Intege
     else
         Ar = nothing
     end
-    Alu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer)
+    Alu = get_row_pivot_lu(ipiv, comm; check=false)
 
     MPI.Barrier(comm)
 
