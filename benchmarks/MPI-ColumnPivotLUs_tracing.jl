@@ -107,7 +107,7 @@ function mpi_profile(short_size::Integer, long_size::Integer, nsamples::Integer)
         Ar = nothing
     end
     rtimer = TimerOutput()
-    Arplu = get_row_pivot_lu(ipiv, comm, index_buffer, maxabs_buffer; timer=rtimer)
+    Arplu = get_row_pivot_lu(ipiv, comm; timer=rtimer, check=false)
 
     MPI.Barrier(comm)
     lu!(Arplu, Arcopy)
